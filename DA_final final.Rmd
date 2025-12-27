@@ -1,0 +1,585 @@
+---
+title: "Data Analytics Final Project Report"
+author: "Zharkov, Oleksii (h12046515); Fiege, Moritz Johannes (h12319734); Sultanbekova, Daryia (h12351729); Janabayev, Alikhan (h12044122)"
+date: "2025-12-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Project Group 4:
+## Food and agricultural Imports and Exports auf Austria in Year 20203
+#### Source of dataset: https://www.fao.org/faostat/en/#data/TM 
+
+
+## General overview of project:
+
+### Reserach Questions:
+#### Are imports or exports greater from EU or non-EU?
+#### Are imports or exports greater from neighboring countires?
+#### What are Austrias most imported / exported goods?
+#### Which countires have similar trade patterns?
+#### What are general patterns characterize Austria's trade profile in 2023?
+
+## Applied Methods:
+#### For reasearching the research questions we decided to implement the following Methods: Comparative aggregation, Group comparison, Descriptive ranking, K-means clustering and Principal compenent Analysis. To categorize we use descripitve statistics, Comparative Analysis and clustering.
+
+## Business Understanding:
+#### The purpose of the project is to see which trading partners and which products are most important to the austrian food market. This case gets handeld with to some describitve Methods as well as some clustering methods as we already described. With the results of these it makes it easier for politcs as well as for companies who are in business of trading or producing with food or agricultural products to prioratize countries or firms who are within some countries. 
+
+#### We used the following libraries to accomplish our project.
+```{r}
+library(ggplot2)
+library(readr)
+library(scales)
+library(stringr) 
+library(dbscan)
+```
+#### We used ggplot2 for plotting our graphs, readr to read our data in, scales to have prettier scales for our PCA plot and stringr to cut off strings in plots for better readability and dbscan to perform clustering with dbscan. 
+
+## Reading Data in, cleaning it and get an overview of the data
+```{r}
+# Read in data form csv file
+trade_raw <- read.csv("./FAOSTAT_data_en_11-17-2025-2.csv")
+
+## Get count of missing data -> should be zero
+total_na_count <- sum(is.na(trade_raw))
+print("Amount of NA and NaN in data")
+total_na_count
+
+# Clean strings: 
+names(trade_raw) <- tolower(names(trade_raw)) # Convert names to lowercase
+names(trade_raw) <- gsub("[^[:alnum:]]", "_", names(trade_raw)) # Replace every symbol that is not number or char to _
+
+# Restore data with easier name
+trade <- trade_raw
+
+# Inspect structure
+print("Dimensions of Data")
+dim(trade)
+head(trade)
+```
+#### Our data consits of 35491 rows which contain 16 variables. With that many rows it is not that simple for us to work with data. Therefore we had two different approaches to dealing with the dataset. Two of the course members had a free elective called: Introduction tor R, where tidyverse was introduced. But we decided to stick with basic R functions, because then the whole group can understand what we did. So we stuck mainly worked with subsets and the aggregate function, which you will see. 
+#### There are multiple columns highly relevant in the dataset. One important column is the partner countries consits of strings. Furhter on we have the column element where it is specified whether the row is Import quantity, Import quality, Export quantity and Export quality which as well are stored in strings. Other than that we have the column item which contains the different product names which were traded. The unit clumn is also important, since it specifies the column value. The unit column holds as well strings. The value column contains now a number which tells us how much of what was traded. The values are stored in numeric column(double in this case).
+#### The data in general can be considered clean, since there are no NA or NaNs. Therefore we only adapt the strings to make them more unique. We can generally assume that there are not outliers, since the Faostat is a highly recognized source and every datapoint is legitament to generally proof that a data point is an outlier we would need to counterproof that by comparing every countrie and every product with another data source and this would generally be too much to proove. 
+
+
+## Initializing subset
+```{r}
+# Creating subset where we only keep Import/Export Value and drop Import/Export quanitiy 
+trade_2023 <- subset(trade,
+  reporter_countries == "Austria" &
+  unit == "1000 USD" &
+  element %in% c("Import value", "Export value")
+)
+
+# Create new column named flow in subset to store either Import, Export or NA when no specification is made
+trade_2023$flow <- NA_character_
+trade_2023$flow[trade_2023$element == "Import value"] <- "Import"
+trade_2023$flow[trade_2023$element == "Export value"] <- "Export"
+
+# See changed data
+table(trade_2023$flow) # See how many are Imports and how many are Exports
+head(trade_2023)
+```
+
+
+## Define list with all names of eu_countires and neighbors and categorize countires
+```{r}
+# Defining a vector containing all current EU member states
+eu_countries <- c(
+  "Austria","Belgium","Bulgaria","Croatia","Cyprus","Czechia",
+  "Denmark","Estonia","Finland","France","Germany","Greece",
+  "Hungary","Ireland","Italy","Latvia","Lithuania","Luxembourg",
+  "Malta","Netherlands","Poland","Portugal","Romania",
+  "Slovakia","Slovenia","Spain","Sweden"
+)
+
+# Defining a vector of countries that share a border with Austria
+neighbors <- c(
+  "Germany","Czechia","Slovakia","Hungary",
+  "Slovenia","Italy","Switzerland","Liechtenstein"
+)
+
+# Categorizing countries who are in the EU and not in the EU and store results in column partner_is_eu by comparing country name with list
+trade_2023$partner_is_eu <- ifelse(trade_2023$partner_countries %in% eu_countries, "EU", "non-EU")
+
+# Categorizing countries who are neighbors and not neighbors to Austria and store results in column neighbor by comparing country name with list
+trade_2023$neighbor <- ifelse(trade_2023$partner_countries %in% neighbors, "Neighbor", "Non-neighbor")
+```
+#### To categorize countries we decided that it would be best to use logical operators (ifelse) to check wheter a country is in the defined list of neighbor or Eu country.
+
+## Comparison of EU and non-EU countires in exports and imports
+```{r}
+# 4. Compare import and exports from non-/EU
+
+# Calculate the total trade value for each combination of Flow (Import/Export) and Region (EU/Non-EU)
+eu_non_eu_by_flow <- aggregate(
+  value ~ flow + partner_is_eu,
+  data = trade_2023,
+  FUN = sum
+)
+# Rename the sum column for clarity
+names(eu_non_eu_by_flow)[names(eu_non_eu_by_flow) == "value"] <- "total_value"
+
+# Display the summary table to check the calculated totals
+eu_non_eu_by_flow
+
+# Create a bar chart to compare the totals
+ggplot(eu_non_eu_by_flow,
+       aes(x = partner_is_eu, y = total_value, fill = flow)) +
+  geom_col(position = "dodge") +
+  labs(
+    x = "Partner group",
+    y = "Total trade value (1000 USD)",
+    title = "Austria: Imports & Exports – EU vs non-EU (2023)"
+  )
+```
+
+#### This graph reveals that Austria's economy is heavily EU-centric. The volume of trade within the EU (left) is roughly three times larger than trade with the rest of the world (right). Additionally, the trade balance flips: Austria is a net importer within the Single Market (buying more than it sells), but operates as a net exporter when trading with non-EU countries.
+
+#### To answer the research question whether more imports and exports are happening from EU-Countries the answer is yes.
+
+## Comparison of Neighboring countries and non Neighboring countires in exports and imports
+```{r}
+# 5.Compare import and exports from Neighbors vs Non-neighbors
+
+# Calculate total trade value grouped by Flow (Import/Export) and Neighbor status
+neighbors_by_flow <- aggregate(
+  value ~ flow + neighbor,
+  data = trade_2023,
+  FUN = sum
+)
+# Rename the sum column for clarity
+names(neighbors_by_flow)[names(neighbors_by_flow) == "value"] <- "total_value"
+
+# Display the summary table to inspect the calculated numbers
+neighbors_by_flow
+
+# Visualize the comparison with a side-by-side bar chart
+ggplot(neighbors_by_flow,
+       aes(x = neighbor, y = total_value, fill = neighbor)) +
+  geom_col() +
+  facet_wrap(~ flow) +   # Create separate panels for imports and exports
+    # Add axis labels and a descriptive title
+  labs(
+    x = "Partner group",
+    y = "Total trade value (1000 USD)",
+    title = "Austria: Trade with Neighboring vs Non-neighboring Countries (2023)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+#### Research Question examines whether Austria’s imports and exports are higher when trading with neighboring countries compared to non-neighboring countries in 2023. Using our dataset, Austria’s trade flows were grouped into imports and exports and further classified according to whether the trading partner shares a geographical border with Austria. This allows for a direct comparison of trade volumes based on geographical proximity.As we can see in our graph, neighboring countries account for a larger share of both imports and exports. Therefore, we can make a conclusion that Austria's imports and exports are higher when trading with neighboring countries compared to non-neighboring countries in 2023.
+
+#### To answer the research question whether more imports and exports are happening from neighboors the answer is also yes.
+
+## Calculating share of total trade within each trade flow
+```{r}
+# Calculate the share of total trade within each trade flow (imports and exports)
+neighbors_by_flow$share <- ave(
+  neighbors_by_flow$total_value,  # Total trade values used for the calculation
+  neighbors_by_flow$flow, #calculations are done separately for imports and exports
+  FUN = function(x) x / sum(x)   # Function to compute each group's share of the total trade
+)
+
+neighbors_by_flow #display results
+
+```
+
+#### Using FAOSTAT trade data for Austria in 2023, trade flows were aggregated by partner type (neighboring vs non-neighboring countries) and by trade flow (imports and exports). The results show that neighboring countries account for the majority of Austria’s trade. Approximately 63.0% of Austria’s total exports are directed to neighboring countries, while 67.9% of total imports originate from them. In contrast, non-neighboring countries account for only 37.0% of exports and 32.1% of imports. These results prove that geographical proximity plays a big role in Austria's trade.
+
+
+
+## Comparing and identifing most imported and most exported products
+```{r}
+# Sort in subset for col flow where they import goods and store in new temp data frame
+import_data <- subset(trade_2023, flow == "Import")
+
+# Using aggregate to aggregate and group items 
+top_import_items <- aggregate(
+  value ~ item, # Sum value col grouped by item col
+  data = import_data,
+  FUN = sum # Aggregate function is sum 
+)
+
+# Change name for better understanding what we did
+names(top_import_items)[names(top_import_items) == "value"] <- "total_import_value"
+
+# Sort top_imported_items in descending order by minus sign 
+top_import_items <- top_import_items[order(-top_import_items$total_import_value), ]
+
+# Drop countries who are not in the top 20
+top_import_items <- head(top_import_items, 20)
+
+# Cut off name of goods after 35 characters and add "..." for better readability by using slicer
+top_import_items$item <- str_trunc(top_import_items$item, width = 35, side = "right")
+
+# Plot top 20 imported items with ggplot
+ggplot(top_import_items,
+       aes(x = reorder(item, total_import_value),
+           y = total_import_value)) +
+  geom_col(fill = "firebrick", alpha = 0.9) +
+  
+  # Add numbers at the end of bars
+  geom_text(aes(label = format(total_import_value, big.mark = ",")), 
+            hjust = -0.1, size = 3) +
+  
+  # Flip x and y axis to get horizontal bar chart
+  # Did this for better readability of names of products
+  coord_flip() +
+  
+  # Add space for labels
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) + 
+  
+  labs(
+    x = NULL, # Remove x axis label
+    y = "Total import (1000 USD)",
+    title = "Top 20 Imported Products (Austria, 2023)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 9))
+
+
+# Exported products
+# Repeating the steps above only now with Exports
+
+# Sort in subset for col flow where they exported goods and store in new temp data frame
+export_data <- subset(trade_2023, flow == "Export")
+
+# Using aggregate to aggregate and group items 
+top_export_items <- aggregate(
+  value ~ item, # Sum value col grouped by item col
+  data = export_data,
+  FUN = sum # Aggregate function is sum 
+)
+
+# Change name for better understanding what we did
+names(top_export_items)[names(top_export_items) == "value"] <- "total_export_value"
+
+# Sort top_exported_items in descending order by minus sign 
+top_export_items <- top_export_items[order(-top_export_items$total_export_value), ]
+
+# Drop countries who are not in the top 20
+top_export_items <- head(top_export_items, 20)
+
+# Cut off again name of goods after 35 characters and add "..." for better readability by using slicer
+top_export_items$item <- str_trunc(top_export_items$item, width = 35, side = "right")
+
+# Plot top 20 exported items with ggplot
+ggplot(top_export_items,
+       aes(x = reorder(item, total_export_value),
+           y = total_export_value)) +
+  geom_col(fill = "steelblue", alpha = 0.9) +
+  
+  geom_text(aes(label = format(total_export_value, big.mark = ",")), 
+            hjust = -0.1, size = 3) +
+  
+  # Flip x and y axis to get horizontal bar chart
+  # Did this for better readability of names of products
+  coord_flip() +
+    # Add space for labels
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  
+  labs(
+    x = NULL, # Remove x axis label
+    y = "Total export (1000 USD)",
+    title = "Top 20 Exported Products (Austria, 2023)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 9))
+```
+
+#### Imported Products: The imported Products mostly of sweets and baked goods such as pastry, chocolate Products, refined sugar and so on. Also Beverages play a huge role when beeing imported like non-alcoholic beverages, wine, coffee,... Austria imports as well Meat and Dairy products, from which 6 are among the top 20 imported products. 
+
+#### Exported Products: By far the most exported product is non alcoholic beverages. It exports much more that it imports. Processed and Prepared Foods play as well a huge role in the exported goods. for example Choclate, Pastry, Sausages and similar products. 
+
+#### Comparison: The imported products lean more towards finished consumer goods, which dont need any further processing. The other most important imported category for goods is basic raw materials like wheat, maize and so on. Exports in comaprison lean strongly towards beverages like the non alcoholic beverages where we clearly export more than we import.
+
+
+## Aggregation and Transformation of Trade Data for Clustering Analysis
+```{r}
+# Summarising the total trade value per country and product category
+country_item_summary <- aggregate(
+  value ~ partner_countries + item,
+  data = trade_2023,
+  FUN = sum
+)
+names(country_item_summary)[names(country_item_summary) == "value"] <- "total_trade_value"
+
+# Transforming the data so that:
+# - each unique partner country becomes one row
+# - each unique item(trading good) becomes a separate column
+# - reshaping the data into a country × product matrix
+country_item_matrix <- reshape(
+  country_item_summary,
+  idvar = "partner_countries",
+  timevar = "item",
+  direction = "wide",
+  v.names = "total_trade_value"
+)
+
+# Replacing NA with zero trade values(no trade)
+country_item_matrix[is.na(country_item_matrix)] <- 0
+
+# Storing country names
+country_names <- country_item_matrix$partner_countries
+
+# Removing the country column for pca and clustering and cleaning the column names
+X <- country_item_matrix[, -1]
+names(X) <- gsub("total_trade_value.", "", names(X)) 
+
+# Using logarithmic transformation to reduce skewness and and stabilize variance 
+X_log <- log1p(X) 
+```
+#### This code prepares our trade data for further analysis by:
+#### - summing the total trade values for each partner country and product
+#### - reshaping the data so that each country is represented as a row and each product as a separate column
+#### - zero values indicating no zero trade 
+#### - logarithmic transformation to reduce the extreme differences(like with Germany)
+
+## Computing the PCA
+```{r}
+# Computing the variance for each column and using only >0 values that show trade that actually differ between counties
+col_vars <- apply(X_log, 2, function(z) var(z, na.rm = TRUE))
+X_pca <- X_log[, col_vars > 0, drop = FALSE]
+
+# Compunting PCA on the cleaned matrix
+pca_res <- prcomp(X_pca, center = TRUE, scale. = TRUE)
+
+# Creating a data frame with country names and the first two PCA coordinates
+pca_df <- data.frame(
+  country = country_names,
+  PC1 = pca_res$x[, 1],
+  PC2 = pca_res$x[, 2]
+)
+
+# Calculating the total trade volume
+pca_df$total_volume <- rowSums(X)
+# Ranking countries by total trade volume in desc order
+pca_df$rank <- rank(-pca_df$total_volume)
+
+# Shortening some country names for better readability later in plots
+pca_df$short_name <- as.character(pca_df$country)
+pca_df$short_name[pca_df$short_name == "United Kingdom of Great Britain and Northern Ireland"] <- "UK"
+pca_df$short_name[pca_df$short_name == "United States of America"] <- "USA"
+pca_df$short_name[pca_df$short_name == "Netherlands (Kingdom of the)"] <- "Netherlands"
+pca_df$short_name[pca_df$short_name == "Russian Federation"] <- "Russia"
+pca_df$short_name[pca_df$short_name == "China, mainland"] <- "China"
+pca_df$short_name[pca_df$short_name == "Bosnia and Herzegovina"] <- "Bosnia"
+
+# We will use only top 25 countries by trade also for better representation
+pca_df$label_text <- ifelse(pca_df$rank <= 25, pca_df$short_name, "")
+
+set.seed(123) 
+wss <- numeric()  # within-cluster sum of squares
+
+for (i in 1:10) {
+  wss[i] <- kmeans(pca_res$x[, 1:2], centers = i)$tot.withinss
+}
+
+# Plotting the elbow curve to determine the number of k
+plot(
+  1:10, wss, type = "b",
+  xlab = "Number of clusters (k)",
+  ylab = "Total within-cluster sum of squares",
+  main = "Elbow Method for K-Means Clustering"
+)
+
+# The elbow curve flattens around k = 4, which is chosen as the number of clusters.
+k <- 4
+
+# Kmeans
+my_clusters <- kmeans(pca_res$x[, 1:2], centers = k)
+pca_df$cluster <- as.factor(my_clusters$cluster)
+```
+#### The elbow curve flattens around k = 4, which is chosen as the number of clusters.
+
+## Visualisation of PCA Results and Clustering on a Scatterplot
+```{r}
+print(
+  ggplot(pca_df, aes(x = PC1, y = PC2, label = label_text)) +
+    geom_point(aes(size = total_volume, color = cluster), alpha = 0.7) +
+    geom_text(size = 3, vjust = -0.8, check_overlap = FALSE) + 
+    scale_x_continuous(trans = "pseudo_log", breaks = pretty_breaks(n=10)) +
+    scale_size_continuous(guide = "none") + 
+    labs(
+      title = "PCA + Clustering of Austria's Trade Structure",
+      subtitle = "Map of trade patterns. Colors = Clusters. Size = Volume.",
+      x = "PC1 (Log Scale)", y = "PC2", color = "Cluster Group"
+    ) +
+    theme_minimal()
+)
+
+```
+
+#### The plot shows Austria's trading partners positioned based on the similarities in their trade structure across product categories using the first two principal components.
+
+#### Countries that appear close together have similar trade patterns. They also mostly appear in one cluster. 
+
+#### Point size shows total trade volume, highlighting Austria’s most important trading partners
+
+#### What we can clearly state from the graph is that Germany is Austria’s largest trading partner, followed by the Netherlands and Italy
+
+
+## Cluster Profiles shown in the Bar Plot
+```{r}
+# Splitting data by cluster
+split_by_cluster <- split(pca_df, pca_df$cluster)
+
+# Creating a cluster summary table:
+# - total trade volume of the cluster
+# - top 10 countries inside the cluster by total trade volume
+cluster_profile <- do.call(rbind, lapply(split_by_cluster, function(df) {
+   # Calculating total trade volume for the cluster and converting it to billions
+  volume_bn <- sum(df$total_volume) / 1e9
+  
+  # Sorting the countries
+  df_sorted <- df[order(-df$total_volume), ]
+  top_members <- paste(head(df_sorted$short_name, 10), collapse = "\n")
+ 
+  # Saving cluster ID, total volume and top members into a data frame
+  data.frame(
+    cluster = df$cluster[1],
+    Volume_Bn = volume_bn,
+    Top_Members = top_members
+  )
+}))
+
+# Plotting
+print(
+  ggplot(cluster_profile, aes(x = cluster, y = Volume_Bn, fill = cluster)) +
+    geom_col(alpha = 0.8) +
+    
+    geom_text(aes(label = Top_Members), 
+              vjust = -0.1, # Sit slightly above the bar
+              size = 2.5,   # Smaller text to fit 10 names
+              lineheight = 0.9) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.6))) + 
+    labs(
+      title = "Cluster Profiles: Top Members",
+      subtitle = "Total trade volume (Billions) and Top 10 members per group",
+      x = "Cluster ID",
+      y = "Total Volume (Billions)"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+)
+```
+
+#### - This plot provides a different representation of the clustering results using a bar plot for clearer and more visually appealing presentation. It shows the total trade volume of each cluster and lists the top ten trading partners within each group (the second cluster only has three partners so it only shows them).
+
+#### - Cluster 2 clearly dominates Austria’s trade, mainly due to major partners such as Germany, Italy, and the Netherlands
+
+#### - Cluster 1 and 4 represent medium-sized groups with a mix of European and international partners. 
+
+#### - Cluster 3 has the smallest total trade volume and consists mostly of more distant and/or less important trading partners.
+
+## Alternative Clustering: K-means on Scaled Log-Data
+```{r}
+# Removing zero-variance columns
+col_vars <- apply(X_log, 2, function(z) var(z, na.rm = TRUE))
+X_nzv <- X_log[, col_vars > 0, drop = FALSE]
+
+# Scaling the log-transformed data
+X_scaled <- scale(as.matrix(X_nzv))
+
+set.seed(123)   
+k <- 4            
+
+km_res <- kmeans(X_scaled, centers = k, nstart = 25)
+
+clusters_df <- data.frame(
+  country = country_names,
+  cluster = factor(km_res$cluster)
+)
+clusters_df[order(clusters_df$cluster), ]
+```
+#### This table shows the results of a different k-means clustering approach. Here countries are grouped based on their full log-transformed and scaled trade profiles rather than on PCA coordinates. This alternative approach serves mostly as a robustness check and confirms that the main clustering results are not driven only the PCA representation. It shows the clearest structured plot to the research question which countries have similar trade patterns. 
+
+
+## Clustering with DB Scan
+```{r}
+# Setting seed for reproducible results
+set.seed(123)
+
+# Running db scan
+# choosing an eps by trial error and see which gives the "best" results
+db_res <- dbscan(pca_res$x[, 1:2], eps = 0.5)
+
+# Dataframe to store DBSCAN results and merge with PCA data
+pca_df_dbscan <- pca_df
+pca_df_dbscan$dbscan_cluster <- as.factor(db_res$cluster)
+
+# Found clusters
+table(pca_df_dbscan$dbscan_cluster)
+
+# Plotting
+print(
+  ggplot(pca_df_dbscan, aes(x = PC1, y = PC2, label = label_text)) +
+    # cluster-ID 0 is noise
+    geom_point(aes(size = total_volume, color = dbscan_cluster), alpha = 0.7) +
+    geom_text(size = 3, vjust = -0.8, check_overlap = FALSE) + 
+    scale_x_continuous(trans = "pseudo_log", breaks = pretty_breaks(n=10)) +
+    scale_size_continuous(guide = "none") + 
+    labs(
+      title = "PCA + DBSCAN Clustering of Austria's Trade Structure",
+      subtitle = "Map of trade patterns. Colors = Clusters. Size = Volume.",
+      x = "PC1", y = "PC2", color = "DBSCAN Cluster"
+    ) +
+    theme_minimal()
+)
+
+
+```
+
+#### We have applied DB scan but it didnt dilver proper results. This is because the datapoints are too spread out. We make it seem due to the pseudo log that the points are closer together. But infact the points are really spread out. There also shouldnt be any outliers, since all countries are valid observation with no observation error or something similar (as we assumed in the beginning).
+#### When we compare k-means clustering to DB-scan K-means is doing a far better job and we think that k-means is closer to correct clustering.
+
+
+
+## Aggregating the top 20 trade partners by trade volume
+```{r}
+# Aggregating total trade by partner country
+top_countries_trade <- aggregate(
+  value ~ partner_countries,
+  data = trade_2023,
+  FUN = sum
+)
+
+# Rename column for clarity
+names(top_countries_trade)[2] <- "total_trade_value"
+
+# Sort countries by total trade value (descending)
+top_countries_trade <- top_countries_trade[
+  order(-top_countries_trade$total_trade_value),
+]
+
+top_countries_trade <- head(top_countries_trade, 20)
+
+top_countries_trade
+
+# Plotting
+ggplot(top_countries_trade,
+       aes(x = reorder(partner_countries, total_trade_value),
+           y = total_trade_value)) +
+  geom_col(fill = "steelblue", alpha = 0.9) +
+  coord_flip() +
+  labs(
+    x = "Partner country",
+    y = "Total trade value (1000 USD)",
+    title = "Top 20 Trade Partners of Austria by Total Trade Volume (2023)"
+  ) +
+  theme_minimal()
+```
+
+#### This figure shows the top 20 trade partners of Austria in 2023 ranked by total trade volume, defined as the sum of imports and exports. The results indicate that Austria’s trade is strongly concentrated among a small number of countries, with Germany clearly dominating as the most important partner. Most of the top trade partners are European countries, many of which are geographically close to Austria, highlighting the role of regional integration and proximity in trade relationships.
+
+
+
+## Future work:
+#### Further projects could focus on comparison with other years. We could then analyze how clusters change or how trade volume of specific countries or specific products change over the years. It could also be very interesting how trade in agricultural products change when for example the covid crisis hit. To conduct these future projects we would again choose a dataset from Faostat, since it is a reliable and highly recognized institution for it. Another project is to look at the top 10 most important trade partners and see if austria is as importent to them as the other country is to us.
+
